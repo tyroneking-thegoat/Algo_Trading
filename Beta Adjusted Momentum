@@ -1,0 +1,113 @@
+# region imports
+from AlgorithmImports import *
+import pandas as pd
+# endregion
+
+class EnhancedMomentumStrategy(QCAlgorithm):
+    
+    def Initialize(self):
+        self.SetStartDate(2015, 1, 1)
+        self.SetEndDate(2024, 1, 1)
+        self.SetCash(100000)
+
+        # List of 30 equities + 2 defensive ETFs (XLP and XLU)
+        self.symbols = [
+            "AAPL", "MSFT", "GOOG", "AMZN", "TSLA", "NVDA", "META", "BRK.B", "JNJ", "V",
+            "PG", "UNH", "HD", "JPM", "MA", "XOM", "PFE", "BAC", "CVX", "KO",
+            "PEP", "MRK", "DIS", "CMCSA", "ADBE", "NFLX", "INTC", "NKE", "T", "MCD",
+            "XLP",  # Consumer Staples ETF (defensive)
+            "XLU"   # Utilities ETF (defensive)
+        ]
+        self.equities = [self.AddEquity(symbol, Resolution.Daily).Symbol for symbol in self.symbols]
+
+        # Variables for momentum, stop-loss, and portfolio management
+        self.momentum_scores = {symbol: None for symbol in self.equities}
+        self.holdings = {symbol: False for symbol in self.equities}
+        self.selection_periods = [90, 180, 270]  # Test different momentum periods: 3, 6, and 9 months
+        self.moving_average_period = 200  # 200-day moving average filter
+
+        self.rebalance_date = self.Time
+        self.rebalance_frequency = timedelta(days=30)  # Rebalance monthly
+
+        # Set ATR-based stop-loss threshold (we'll use 2x ATR for stop-loss)
+        self.atr_multiplier = 2.0
+        self.atr_period = 14  # 14-day ATR for volatility calculation
+
+    def OnData(self, data):
+        # Rebalance the portfolio monthly
+        if self.Time >= self.rebalance_date:
+            self.rebalance_date = self.Time + self.rebalance_frequency
+            self.RebalancePortfolio()
+
+    def RebalancePortfolio(self):
+        # Calculate momentum for each stock over the different periods
+        for symbol in self.equities:
+            best_momentum = None
+            for period in self.selection_periods:
+                history = self.History(symbol, period, Resolution.Daily)
+                if len(history) > 0:
+                    past_price = history['close'].iloc[0]
+                    current_price = self.Securities[symbol].Price
+                    momentum = (current_price - past_price) / past_price
+                    # Select the best momentum score for this symbol
+                    if best_momentum is None or momentum > best_momentum:
+                        best_momentum = momentum
+            self.momentum_scores[symbol] = best_momentum
+
+            # Moving average filter: only consider stocks above their 200-day moving average
+            ma_history = self.History(symbol, self.moving_average_period, Resolution.Daily)
+            if len(ma_history) > 0:
+                moving_average = ma_history['close'].mean()
+                if current_price < moving_average:
+                    self.momentum_scores[symbol] = -1  # Ignore stocks below their moving average
+
+        # Sort stocks by momentum and select the top performers
+        sorted_momentum = sorted(self.momentum_scores.items(), key=lambda x: x[1], reverse=True)
+        top_momentum_stocks = [symbol for symbol, score in sorted_momentum[:10]]  # Select top 10 stocks
+
+        # Sell positions that are no longer in the top momentum stocks or hit the dynamic ATR stop-loss
+        for symbol in self.equities:
+            if self.holdings[symbol] and symbol not in top_momentum_stocks:
+                self.Liquidate(symbol)
+                self.holdings[symbol] = False
+            elif self.holdings[symbol]:
+                # Dynamic ATR-based stop-loss
+                atr = self.CalculateATR(symbol)
+                if atr is not None:
+                    history = self.History(symbol, self.selection_periods[1], Resolution.Daily)  # Using 6 months for peak
+                    if len(history) > 0:
+                        peak_price = history['close'].max()  # Get the peak 'close' price over the last 6 months
+                        current_price = self.Securities[symbol].Price
+                        if (peak_price - current_price) > atr * self.atr_multiplier:
+                            self.Liquidate(symbol)
+                            self.holdings[symbol] = False
+
+        # Buy/hold positions in top momentum stocks that meet the moving average filter
+        for symbol in top_momentum_stocks:
+            if not self.holdings[symbol]:
+                self.SetHoldings(symbol, 1 / len(top_momentum_stocks))  # Equal weight
+                self.holdings[symbol] = True
+
+    def CalculateATR(self, symbol):
+        """Calculate the ATR (Average True Range) for a given symbol."""
+        atr_history = self.History(symbol, self.atr_period + 1, Resolution.Daily)
+        if len(atr_history) < self.atr_period:
+            return None  # Not enough history to calculate ATR
+        
+        high_low_diff = atr_history['high'] - atr_history['low']
+        high_close_diff = abs(atr_history['high'] - atr_history['close'].shift(1))
+        low_close_diff = abs(atr_history['low'] - atr_history['close'].shift(1))
+
+        # Create a DataFrame for true range calculation
+        true_range = pd.DataFrame({
+            'high_low': high_low_diff,
+            'high_close': high_close_diff,
+            'low_close': low_close_diff
+        }).max(axis=1)
+        
+        # Calculate the rolling ATR (average of the True Range)
+        atr = true_range.rolling(window=self.atr_period).mean().iloc[-1]  # Use pandas rolling function
+        return atr
+
+    def OnEndOfAlgorithm(self):
+        self.Debug(f"Final Portfolio Value: {self.Portfolio.TotalPortfolioValue}")
