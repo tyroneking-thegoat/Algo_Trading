@@ -1,0 +1,62 @@
+# region imports
+from AlgorithmImports import *
+# endregion
+
+class MomentumStrategy(QCAlgorithm):
+    
+    def Initialize(self):
+        self.SetStartDate(2015, 1, 1)
+        self.SetEndDate(2024, 1, 1)
+        self.SetCash(100000)
+        
+        # List of 30 equities
+        self.symbols = [
+            "AAPL", "MSFT", "GOOG", "AMZN", "TSLA", "NVDA", "META", "BRK.B", "JNJ", "V",
+            "PG", "UNH", "HD", "JPM", "MA", "XOM", "PFE", "BAC", "CVX", "KO",
+            "PEP", "MRK", "DIS", "CMCSA", "ADBE", "NFLX", "INTC", "NKE", "T", "MCD"
+        ]
+        self.equities = [self.AddEquity(symbol, Resolution.Daily).Symbol for symbol in self.symbols]
+        
+        self.momentum_scores = {symbol: None for symbol in self.equities}
+        self.holdings = {symbol: False for symbol in self.equities}
+        self.selection_period = 180  # 6-month momentum period
+        
+        self.rebalance_date = self.Time  # Track rebalance date
+        self.rebalance_frequency = timedelta(days=30)  # Rebalance monthly
+
+    def OnData(self, data):
+        # Rebalance the portfolio monthly
+        if self.Time >= self.rebalance_date:
+            self.rebalance_date = self.Time + self.rebalance_frequency
+            self.RebalancePortfolio()
+
+    def RebalancePortfolio(self):
+        # Calculate momentum for each stock over the last 6 months (180 days)
+        for symbol in self.equities:
+            history = self.History(symbol, self.selection_period, Resolution.Daily)
+            if len(history) > 0:
+                past_price = history.iloc[0]['close']
+                current_price = self.Securities[symbol].Price
+                momentum = (current_price - past_price) / past_price
+                self.momentum_scores[symbol] = momentum
+
+        # Sort stocks by momentum and select the top performers
+        sorted_momentum = sorted(self.momentum_scores.items(), key=lambda x: x[1], reverse=True)
+        top_momentum_stocks = [symbol for symbol, score in sorted_momentum[:10]]  # Select top 10 stocks
+
+        # Sell positions that are no longer in the top momentum stocks
+        for symbol in self.equities:
+            if self.holdings[symbol] and symbol not in top_momentum_stocks:
+                self.Liquidate(symbol)
+                self.holdings[symbol] = False
+                self.Debug(f"Exiting {symbol} due to underperformance.")
+
+        # Buy/hold positions in top momentum stocks
+        for symbol in top_momentum_stocks:
+            if not self.holdings[symbol]:
+                self.SetHoldings(symbol, 1 / len(top_momentum_stocks))  # Equal weight
+                self.holdings[symbol] = True
+                self.Debug(f"Entering {symbol} with momentum score {self.momentum_scores[symbol]}.")
+
+    def OnEndOfAlgorithm(self):
+        self.Debug(f"Final Portfolio Value: {self.Portfolio.TotalPortfolioValue}")
