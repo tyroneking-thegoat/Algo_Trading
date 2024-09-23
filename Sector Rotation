@@ -1,0 +1,63 @@
+from AlgorithmImports import *
+
+class SectorRotationStrategy(QCAlgorithm):
+    def Initialize(self):
+        self.SetStartDate(2020,1,1)
+        self.SetEndDate(2024,1,1)
+        self.SetCash(100000)
+        
+        # Define sector ETFs
+        sector_tickers = {
+            "Technology": "XLK",
+            "Healthcare": "XLV",
+            "Financial": "XLF",
+            "Energy": "XLE",
+            "Consumer Discretionary": "XLY",
+            "Utilities": "XLU",
+            "Industrials": "XLI",
+            "Real Estate": "XLRE",
+            "Materials": "XLB",
+            "Consumer Staples": "XLP"
+        }
+        
+        self.sectors = {}
+        for sector_name, ticker in sector_tickers.items():
+            equity = self.AddEquity(ticker, Resolution.Daily)
+            equity.SetDataNormalizationMode(DataNormalizationMode.Raw)
+            self.sectors[sector_name] = equity.Symbol  # Map sector names to Symbol objects
+        
+        # Schedule monthly rotation based on simple criteria
+        self.Schedule.On(self.DateRules.MonthStart(), self.TimeRules.AfterMarketOpen("XLK"), self.RotateSectors)
+    
+    def RotateSectors(self):
+        self.Log("Rotating Sectors")
+        
+        # Example Criteria: Momentum-based rotation
+        momentum_scores = {}
+        for sector_name, symbol in self.sectors.items():
+            history = self.History([symbol], 30, Resolution.Daily)  # Request history for a list of symbols
+            if history.empty:
+                self.Log(f"No historical data for {symbol.Value}")
+                continue
+            # Access data for the symbol
+            history = history.loc[symbol]
+            total_return = (history["close"].iloc[-1] - history["close"].iloc[0]) / history["close"].iloc[0]
+            momentum_scores[symbol] = total_return
+            self.Log(f"{symbol.Value} Momentum Score = {total_return:.2%}")
+        
+        # Select top 3 sectors
+        top_sectors = sorted(momentum_scores.items(), key=lambda x: x[1], reverse=True)[:3]
+        top_symbols = [item[0] for item in top_sectors]
+        
+        # Liquidate holdings not in top sectors
+        for holding in self.Portfolio.Values:
+            if holding.Symbol not in top_symbols and holding.Invested:
+                self.Liquidate(holding.Symbol)
+                self.Log(f"Liquidated {holding.Symbol.Value}")
+        
+        # Allocate equal weight to top sectors
+        weight = 1 / len(top_symbols)
+        for symbol in top_symbols:
+            if not self.Portfolio[symbol].Invested:
+                self.SetHoldings(symbol, weight)
+                self.Log(f"Bought {symbol.Value} at {self.Securities[symbol].Price}")
