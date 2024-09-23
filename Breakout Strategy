@@ -1,0 +1,83 @@
+from AlgorithmImports import *
+
+class BreakoutStrategy(QCAlgorithm):
+
+    def Initialize(self):
+        self.SetStartDate(2020, 1, 1)   # Set Start Date
+        self.SetEndDate(2023, 1, 1)     # Set End Date
+        self.SetCash(100000)            # Set Strategy Cash
+
+        # Define the stock symbol to trade
+        self.symbol = self.AddEquity("AAPL", Resolution.Daily).Symbol
+        self.Debug(f"Initialized symbol: {self.symbol}")
+
+        # Define the period for high and low (e.g., 20 days)
+        self.breakout_period = 20
+        self.Debug(f"Breakout period set to: {self.breakout_period} days")
+
+        # Create Rolling Windows to keep track of the past highs and lows
+        self.highs = RollingWindow[float](self.breakout_period)
+        self.lows = RollingWindow[float](self.breakout_period)
+        self.Debug("Created RollingWindow for highs and lows")
+
+        # Warm up the rolling windows with historical data
+        history = self.History(self.symbol, self.breakout_period + 1, Resolution.Daily)
+        bars = history.loc[self.symbol]
+        self.Debug(f"Requested historical data: received {len(bars)} bars")
+
+        if bars.empty:
+            self.Debug("Historical data is empty. Check if the data exists for the specified period.")
+        else:
+            # Exclude the most recent bar to avoid including today's data
+            for index, row in bars.iloc[:-1].iterrows():
+                self.highs.Add(float(row["high"]))
+                self.lows.Add(float(row["low"]))
+            self.Debug("Rolling windows warmed up with historical data")
+
+    def OnData(self, data):
+        self.Debug("OnData called")
+        # Check if we have data for the symbol
+        if self.symbol not in data or data[self.symbol] is None:
+            self.Debug(f"No data for symbol {self.symbol}")
+            return
+
+        # Ensure we have enough data
+        if not self.highs.IsReady or not self.lows.IsReady:
+            self.Debug("Rolling windows not ready yet")
+            return
+        else:
+            self.Debug("Rolling windows are ready")
+
+        # Get the current price
+        bar = data[self.symbol]
+        price = bar.Close
+        self.Debug(f"Current price: {price}")
+
+        # Calculate the highest high and lowest low over the breakout period
+        highest_high = max(self.highs)
+        lowest_low = min(self.lows)
+        self.Debug(f"Highest high: {highest_high}, Lowest low: {lowest_low}")
+
+        holdings = self.Portfolio[self.symbol].Quantity
+        self.Debug(f"Current holdings: {holdings}")
+
+        # Breakout above the highest high
+        if price > highest_high and holdings <= 0:
+            self.SetHoldings(self.symbol, 1)
+            self.Debug(f"Breakout above: Buying {self.symbol} at {price}")
+            self.Log(f"BUY {self.symbol} at {price}")
+
+        # Breakout below the lowest low
+        elif price < lowest_low and holdings > 0:
+            self.Liquidate(self.symbol)
+            self.Debug(f"Breakout below: Selling {self.symbol} at {price}")
+            self.Log(f"SELL {self.symbol} at {price}")
+
+        # Update the rolling windows with the current high and low AFTER calculations
+        self.highs.Add(bar.High)
+        self.lows.Add(bar.Low)
+
+    def OnOrderEvent(self, orderEvent):
+        # Handle order events
+        if orderEvent.Status == OrderStatus.Filled:
+            self.Debug(f"Order filled: {orderEvent.Symbol} {orderEvent.Direction} at {orderEvent.FillPrice}")
